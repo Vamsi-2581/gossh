@@ -21,23 +21,29 @@ import (
 // TODO: do we want these to be configurable? Then add to config
 // Or are they shared invariants between client/server? Move to a shared package for using in both client.go and server.go
 const (
-	ReadBufSize    = 32 * 1024
+	// ReadBufSize is the buffer size used when reading TCP and WebSocket data.
+	ReadBufSize = 32 * 1024
+	// WriteBufSize is the WebSocket write buffer size.
 	WriteBufSize   = 32 * 1024
 	sshUnavailable = "SSH_UNAVAILABLE"
 
+	// HandShakeTime is the WebSocket handshake timeout in seconds.
 	HandShakeTime = 15
 )
 
+// GoSSHClient forwards connections from a local TCP listener to a remote WebSocket.
 type GoSSHClient struct {
 	conf   GoSSHClientConfiguration
 	logger log.Logger
 }
 
+// GoSSHClientConfiguration contains the local listener and remote endpoint settings.
 type GoSSHClientConfiguration struct {
 	Port            int
 	RawWebsocketURL string
 }
 
+// NewGoSSHClient creates a client with the supplied configuration and logger.
 func NewGoSSHClient(config GoSSHClientConfiguration, logger log.Logger) GoSSHClient {
 	return GoSSHClient{
 		conf:   config,
@@ -45,6 +51,7 @@ func NewGoSSHClient(config GoSSHClientConfiguration, logger log.Logger) GoSSHCli
 	}
 }
 
+// Run listens for local TCP connections and forwards each through a WebSocket session.
 func (gossh GoSSHClient) Run() error {
 	listenAddr := fmt.Sprintf("localhost:%d", gossh.conf.Port)
 
@@ -87,6 +94,8 @@ func (gossh GoSSHClient) Run() error {
 	}
 }
 
+// handleClientTCP opens the remote WebSocket for an accepted local TCP connection
+// and passes both connections to tunnel.NewSession from gossh/internal/tunnel.
 func (gossh GoSSHClient) handleClientTCP(tcp net.Conn, wsURL string, originalURL string) {
 
 	host := tlsHost(originalURL)
@@ -115,6 +124,8 @@ func (gossh GoSSHClient) handleClientTCP(tcp net.Conn, wsURL string, originalURL
 	gossh.runClientSession(session)
 }
 
+// runClientSession copies data in both directions through the session API provided
+// by gossh/internal/tunnel, then closes the session when either side ends.
 func (gossh GoSSHClient) runClientSession(s *tunnel.Session) {
 	defer s.Close()
 
@@ -194,6 +205,7 @@ func (gossh GoSSHClient) runClientSession(s *tunnel.Session) {
 // TODO: these are copied directly from cmd/gossh/main.go
 // find better packaging of these helper/until below
 
+// tlsHost extracts the hostname used as the TLS server name for a remote URL.
 func tlsHost(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -204,7 +216,7 @@ func tlsHost(raw string) string {
 	return host
 }
 
-// convertToWSS Turns the remote URL into websocket format
+// convertToWSS converts an HTTP(S) endpoint to its WebSocket URL and appends /ws.
 func convertToWSS(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -243,6 +255,8 @@ func convertToWSS(raw string) (string, error) {
 	return u.String(), nil
 }
 
+// isClosedNetworkError reports whether a listener error means it was closed
+// during client shutdown.
 func isClosedNetworkError(err error) bool {
 	if err == net.ErrClosed {
 		return true

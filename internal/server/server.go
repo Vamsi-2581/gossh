@@ -23,11 +23,14 @@ import (
 // TODO: do we want these to be configurable? Then add to config
 // Or are they shared invariants between client/server? Move to a shared package for using in both client.go and server.go
 const (
-	ReadBufSize    = 32 * 1024
+	// ReadBufSize is the buffer size used when reading TCP and WebSocket data.
+	ReadBufSize = 32 * 1024
+	// WriteBufSize is the WebSocket write buffer size.
 	WriteBufSize   = 32 * 1024
 	sshUnavailable = "SSH_UNAVAILABLE"
 )
 
+// GoSSHServer serves WebSocket tunnels to the local SSH daemon and reports server status.
 type GoSSHServer struct {
 	conf   GoSSHServerConfiguration
 	logger log.Logger
@@ -39,6 +42,7 @@ type GoSSHServer struct {
 	bytesOut int64
 }
 
+// GoSSHServerConfiguration contains listener, SSH, timeout, and connection-limit settings.
 type GoSSHServerConfiguration struct {
 	Port     int
 	SSHPort  int
@@ -46,6 +50,7 @@ type GoSSHServerConfiguration struct {
 	MaxConns int
 }
 
+// NewGoSSHServer creates a server with the supplied configuration and logger.
 func NewGoSSHServer(config GoSSHServerConfiguration, logger log.Logger) *GoSSHServer {
 	return &GoSSHServer{
 		conf:      config,
@@ -54,6 +59,7 @@ func NewGoSSHServer(config GoSSHServerConfiguration, logger log.Logger) *GoSSHSe
 	}
 }
 
+// Run registers the WebSocket and status endpoints, then serves until shutdown.
 func (gossh *GoSSHServer) Run() error {
 	gossh.startedAt = time.Now()
 	addr := fmt.Sprintf(":%d", gossh.conf.Port)
@@ -121,6 +127,8 @@ func (gossh *GoSSHServer) Run() error {
 	return err
 }
 
+// handleServerWebSocket upgrades /ws requests and connects each WebSocket to the
+// configured local SSH daemon before starting a tunnel session.
 func (gossh *GoSSHServer) handleServerWebSocket(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/ws" {
 		http.NotFound(w, r)
@@ -157,6 +165,7 @@ func (gossh *GoSSHServer) handleServerWebSocket(w http.ResponseWriter, r *http.R
 	gossh.runServerSession(session)
 }
 
+// handleServerStatus writes uptime, active session count, and byte totals as JSON.
 func (gossh *GoSSHServer) handleServerStatus(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/status" {
 		http.NotFound(w, r)
@@ -179,6 +188,8 @@ func (gossh *GoSSHServer) handleServerStatus(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(resp)
 }
 
+// runServerSession copies data between the SSH connection and WebSocket using
+// the session API from gossh/internal/tunnel, then updates session and byte counts.
 func (gossh *GoSSHServer) runServerSession(s *tunnel.Session) {
 	defer s.Close()
 
@@ -249,6 +260,7 @@ func (gossh *GoSSHServer) runServerSession(s *tunnel.Session) {
 	gossh.logger.Info("Client disconnected")
 }
 
+// shutdownContext returns a context that bounds graceful HTTP shutdown to five seconds.
 func shutdownContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }

@@ -17,6 +17,8 @@ import (
 
 const appDir = ".gossh"
 
+// usage prints the command-line syntax and examples when argument parsing fails
+// or an unsupported mode is selected.
 func usage() {
 	fmt.Println(`Usage: gossh <mode> [OPTIONS]
 
@@ -61,6 +63,7 @@ SSH connection:
   ssh user@localhost -p 8888`)
 }
 
+// main parses CLI settings, initializes logging, and starts the selected mode.
 func main() {
 	var logFile *os.File
 	args := os.Args

@@ -15,6 +15,7 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
+// Config holds settings parsed from the command line, environment, and config file.
 type Config struct {
 	Mode           string
 	HttpServerPort int
@@ -27,17 +28,26 @@ type Config struct {
 }
 
 const (
+	// Version is the current gossh release version.
 	Version = "1.5.0"
 
-	DefaultSSHPort  = 22
+	// DefaultSSHPort is the local SSH daemon port used by server mode.
+	DefaultSSHPort = 22
+	// DefaultHTTPPort is the HTTP/WebSocket listener port used by server mode.
 	DefaultHTTPPort = 7777
-	DefaultTCPPort  = 8888
+	// DefaultTCPPort is the local TCP listener port used by client mode.
+	DefaultTCPPort = 8888
 
+	// ServerMode selects server operation.
 	ServerMode = "server"
+	// ClientMode selects client operation.
 	ClientMode = "client"
+	// StatusMode selects remote server status reporting.
 	StatusMode = "status"
 )
 
+// findConfigFile returns the explicit config path or the first existing default
+// path, checking the working directory, user config directory, and /etc.
 func findConfigFile(configFile string) (string, error) {
 	if configFile != "" {
 		if _, err := os.Stat(configFile); err != nil {
@@ -73,6 +83,8 @@ func findConfigFile(configFile string) (string, error) {
 	return "", nil
 }
 
+// applyFileConfig decodes YAML or TOML settings and applies the section matching
+// cfg.Mode. Command-line and environment overrides are applied later by ParseArgs.
 func applyFileConfig(configFile string, cfg *Config) error {
 	type ServerConfig struct {
 		HttpServerPort int          `yaml:"port" toml:"port"`
@@ -154,6 +166,8 @@ func applyFileConfig(configFile string, cfg *Config) error {
 	return nil
 }
 
+// ParseArgs parses the mode and its flags, then combines defaults, file settings,
+// environment variables, and explicit flags in increasing order of precedence.
 func ParseArgs(args []string) (Config, error) {
 	if len(args) < 1 {
 		return Config{}, fmt.Errorf("mode is required")
