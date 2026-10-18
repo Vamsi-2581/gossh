@@ -29,7 +29,7 @@ type Config struct {
 
 const (
 	// Version is the current gossh release version.
-	Version = "1.5.0"
+	Version = "1.6.0"
 
 	// DefaultSSHPort is the local SSH daemon port used by server mode.
 	DefaultSSHPort = 22
