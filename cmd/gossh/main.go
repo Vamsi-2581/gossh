@@ -41,7 +41,7 @@ Server mode options:
   --port <port>         HTTP/WebSocket server port (default: 7777)
   --ssh <port>          SSH daemon port (default: 22)
   --daemon              Run the server in the background
-  --max-conns			Maximum connections server can hold
+  --max-conns           Maximum connections server can hold
 
 Client mode options:
   --connect <url>       Remote WebSocket/HTTP URL (required)
