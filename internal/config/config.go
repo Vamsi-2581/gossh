@@ -30,7 +30,10 @@ type Config struct {
 
 const (
 	// Version is the current gossh release version.
-	Version = "1.7.0"
+	Version = "1.8.0"
+
+	// Installation URL
+	InstallerURL = "https://raw.githubusercontent.com/ankushT369/gossh/main/install.sh"
 
 	// DefaultSSHPort is the local SSH daemon port used by server mode.
 	DefaultSSHPort = 22
@@ -45,6 +48,8 @@ const (
 	ClientMode = "client"
 	// StatusMode selects remote server status reporting.
 	StatusMode = "status"
+	// UpgradeMode upgrades gossh
+	UpgradeMode = "upgrade"
 )
 
 // findConfigFile returns the explicit config path or the first existing default
@@ -190,6 +195,8 @@ func ParseArgs(args []string) (Config, error) {
 		cfg.Mode = ClientMode
 	case StatusMode:
 		cfg.Mode = StatusMode
+	case UpgradeMode:
+		cfg.Mode = UpgradeMode
 	default:
 		return Config{}, fmt.Errorf("unknown mode: %s", args[0])
 	}

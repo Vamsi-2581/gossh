@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"gossh/internal/client"
 	"gossh/internal/config"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -47,6 +49,7 @@ Modes:
   server                Run in server mode
   client                Run in client mode
   status                Show the status of a daemonized gossh process
+  upgrade               Upgrades gossh
 
 Verbosity control:
   -q, --quiet           Suppress info/debug output
@@ -67,6 +70,9 @@ Client mode options:
   --port <port>         Local port to expose (default: 8888)
   --daemon              Run the client in the background
 
+Status mode options:
+  --target <url>        Remote WebSocket/HTTP URL (required)
+
 Config File option:
   --config <filepath>   Path to config file
 
@@ -81,6 +87,8 @@ Examples:
   # Connect via browser
   gossh server --port 7777 --web https://example.com
 
+  # Upgrade gossh
+  gossh upgrade
 
 SSH connection:
   ssh user@localhost -p 8888`)
@@ -97,7 +105,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	checkForUpdates()
+	if cfg.Mode != config.UpgradeMode {
+		checkForUpdates()
+	}
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		root := filepath.Join(homeDir, appDir)
@@ -113,10 +123,12 @@ func main() {
 
 	// Logger could be replaced OR a custom writer could be added to
 	logger := log.NewLogger(cfg.Verbosity, &log.LogWriter{File: logFile})
-	logger.Info("v%s", config.Version)
-	logger.Trace("Initialized logger")
-	if logFile != nil {
-		logger.Info("Log file: %s", logFile.Name())
+	if cfg.Mode != config.UpgradeMode {
+		logger.Info("v%s", config.Version)
+		logger.Trace("Initialized logger")
+		if logFile != nil {
+			logger.Info("Log file: %s", logFile.Name())
+		}
 	}
 
 	var runErr error
@@ -195,6 +207,40 @@ func main() {
 		}
 
 		fmt.Println(string(body))
+	case config.UpgradeMode:
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Get(config.InstallerURL)
+		if err != nil {
+			runErr = fmt.Errorf("cannot download installer: %w", err)
+			break
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			runErr = fmt.Errorf("installer download failed: %s", resp.Status)
+			break
+		}
+
+		script, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			runErr = fmt.Errorf("cannot read installer: %w", err)
+			break
+		}
+
+		cmd := exec.Command("bash")
+		cmd.Stdin = bytes.NewReader(script)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		fmt.Println("Installing latest gossh release...")
+		if err := cmd.Run(); err != nil {
+			runErr = fmt.Errorf("upgrade failed: %w", err)
+			break
+		}
+
+		fmt.Println("gossh upgrade completed.")
+
 	default:
 		usage()
 		os.Exit(1)
