@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"gossh/internal/log"
 	"gossh/internal/tunnel"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -48,6 +53,7 @@ type GoSSHServerConfiguration struct {
 	SSHPort  int
 	Timeout  time.Duration
 	MaxConns int
+	Web      string
 }
 
 // NewGoSSHServer creates a server with the supplied configuration and logger.
@@ -65,6 +71,31 @@ func (gossh *GoSSHServer) Run() error {
 	addr := fmt.Sprintf(":%d", gossh.conf.Port)
 
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/term", func(w http.ResponseWriter, r *http.Request) {
+		if gossh.conf.Web == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		if r.URL.Path != "/term" {
+			http.NotFound(w, r)
+			return
+		}
+
+		terminalPageHandler(w, r)
+	})
+
+	// '/webterm-ws' is the general endpoint for ssh connections via browser
+	mux.HandleFunc("/webterm-ws", func(w http.ResponseWriter, r *http.Request) {
+		if gossh.conf.Web == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		gossh.handleTerminalWebSocket(w, r)
+	})
+
 	// '/ws' is the general endpoint for ssh connections
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		newSessionCounter := atomic.AddInt32(&gossh.activeSessions, 1)
@@ -139,7 +170,8 @@ func (gossh *GoSSHServer) handleServerWebSocket(w http.ResponseWriter, r *http.R
 		ReadBufferSize:  ReadBufSize,
 		WriteBufferSize: WriteBufSize,
 		CheckOrigin: func(r *http.Request) bool {
-			// For not it only reject the browser request
+			// Reject browser-originated requests for the non-web SSH endpoint
+			// by allowing only connections without an Origin header.
 			return r.Header.Get("Origin") == ""
 		},
 	}
@@ -163,6 +195,242 @@ func (gossh *GoSSHServer) handleServerWebSocket(w http.ResponseWriter, r *http.R
 
 	session := tunnel.NewSession(ws, tcp)
 	gossh.runServerSession(session)
+}
+
+// handleTerminalWebSocket upgrades /webterm-ws requests and connects each WebSocket
+// to the configured local SSH daemon to establish an interactive terminal session.
+func (gossh *GoSSHServer) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request) {
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  ReadBufSize,
+		WriteBufferSize: WriteBufSize,
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return false
+			}
+
+			u, err := url.Parse(origin)
+			if err != nil {
+				return false
+			}
+
+			configured, err := url.Parse(gossh.conf.Web)
+			if err != nil || configured.Scheme != "https" ||
+				configured.Host == "" || configured.User != nil {
+				return false
+			}
+
+			return u.Scheme == configured.Scheme &&
+				u.Host == configured.Host &&
+				u.User == nil &&
+				u.Path == "" &&
+				u.RawQuery == "" &&
+				u.Fragment == ""
+		},
+	}
+
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		gossh.logger.Warn("Terminal WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer ws.Close()
+
+	// The first message must contain the login credentials.
+	var auth struct {
+		Type     string `json:"type"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Cols     int    `json:"cols"`
+		Rows     int    `json:"rows"`
+	}
+
+	if err := ws.ReadJSON(&auth); err != nil ||
+		auth.Type != "auth" ||
+		auth.Username == "" ||
+		auth.Password == "" {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error",
+			"data": "Invalid login message",
+		})
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error", "data": "Cannot locate SSH known_hosts",
+		})
+		return
+	}
+
+	hostKeyCallback, err := knownhosts.New(
+		filepath.Join(home, ".ssh", "known_hosts"),
+	)
+	if err != nil {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error",
+			"data": "SSH known_hosts file is missing or unreadable",
+		})
+		return
+	}
+
+	sshConfig := &ssh.ClientConfig{
+		User: auth.Username,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(auth.Password),
+		},
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         5 * time.Second,
+	}
+
+	addr := net.JoinHostPort("localhost", strconv.Itoa(gossh.conf.SSHPort))
+	tcpConn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error", "data": "Cannot connect to SSH server",
+		})
+		return
+	}
+	defer tcpConn.Close()
+
+	// Use localhost:port for known_hosts verification.
+	sshConn, chans, reqs, err := ssh.NewClientConn(tcpConn, addr, sshConfig)
+	if err != nil {
+		gossh.logger.Warn("Browser SSH authentication failed: %v", err)
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error",
+			"data": "SSH authentication failed or host key verification failed",
+		})
+		return
+	}
+
+	client := ssh.NewClient(sshConn, chans, reqs)
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error", "data": "Cannot create SSH session",
+		})
+		return
+	}
+	defer session.Close()
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return
+	}
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		return
+	}
+	stderr, err := session.StderrPipe()
+	if err != nil {
+		return
+	}
+
+	cols, rows := auth.Cols, auth.Rows
+	if cols < 1 || cols > 500 {
+		cols = 80
+	}
+	if rows < 1 || rows > 300 {
+		rows = 24
+	}
+
+	// Right now its bare-min UI configuration
+	if err := session.RequestPty(
+		"xterm-256color",
+		rows,
+		cols,
+		ssh.TerminalModes{
+			ssh.ECHO:          1,
+			ssh.TTY_OP_ISPEED: 14400,
+			ssh.TTY_OP_OSPEED: 14400,
+		},
+	); err != nil {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error", "data": "Cannot allocate SSH terminal",
+		})
+		return
+	}
+
+	if err := session.Shell(); err != nil {
+		_ = ws.WriteJSON(map[string]string{
+			"type": "error", "data": "Cannot start SSH shell",
+		})
+		return
+	}
+
+	var writeMu sync.Mutex
+	writeJSON := func(v any) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return ws.WriteJSON(v)
+	}
+
+	_ = writeJSON(map[string]string{
+		"type": "status", "data": "Connected",
+	})
+
+	output := func(reader io.Reader) {
+		buf := make([]byte, ReadBufSize)
+		for {
+			n, readErr := reader.Read(buf)
+			if n > 0 {
+				if err := writeJSON(map[string]string{
+					"type": "output",
+					"data": string(buf[:n]),
+				}); err != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				return
+			}
+		}
+	}
+
+	var outputWG sync.WaitGroup
+	outputWG.Add(2)
+	go func() {
+		defer outputWG.Done()
+		output(stdout)
+	}()
+	go func() {
+		defer outputWG.Done()
+		output(stderr)
+	}()
+
+	// Read terminal input and resize events from the browser.
+	for {
+		var msg struct {
+			Type string `json:"type"`
+			Data string `json:"data"`
+			Cols int    `json:"cols"`
+			Rows int    `json:"rows"`
+		}
+
+		if err := ws.ReadJSON(&msg); err != nil {
+			break
+		}
+
+		switch msg.Type {
+		case "input":
+			if _, err := io.WriteString(stdin, msg.Data); err != nil {
+				return
+			}
+		case "resize":
+			if msg.Cols >= 1 && msg.Cols <= 500 &&
+				msg.Rows >= 1 && msg.Rows <= 300 {
+				_ = session.WindowChange(msg.Rows, msg.Cols)
+			}
+		}
+	}
+
+	_ = session.Close()
+	_ = client.Close()
+	outputWG.Wait()
 }
 
 // handleServerStatus writes uptime, active session count, and byte totals as JSON.

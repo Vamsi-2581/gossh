@@ -7,6 +7,7 @@ import (
 	"gossh/internal/daemon"
 	"gossh/internal/log"
 	"gossh/internal/server"
+	"gossh/internal/versioncheck"
 	"io"
 	"net/http"
 	"os"
@@ -16,6 +17,23 @@ import (
 )
 
 const appDir = ".gossh"
+
+func checkForUpdates() {
+	latest, releaseURL, err := versioncheck.Check(config.Version)
+	if err != nil {
+		// Update checking is optional.
+		return
+	}
+
+	if latest != "" {
+		fmt.Printf("A new gossh version is available: %s -> %s\n",
+			config.Version, latest)
+		fmt.Println("Upgrade with: `gossh upgrade`")
+		fmt.Println("Or run:")
+		fmt.Println("   curl -fsSL https://raw.githubusercontent.com/ankushT369/gossh/main/install.sh | bash")
+		fmt.Printf("   Release notes: %s\n\n", releaseURL)
+	}
+}
 
 // usage prints the command-line syntax and examples when argument parsing fails
 // or an unsupported mode is selected.
@@ -42,6 +60,7 @@ Server mode options:
   --ssh <port>          SSH daemon port (default: 22)
   --daemon              Run the server in the background
   --max-conns           Maximum connections server can hold
+  --web <origin>        Enable browser terminal for this HTTPS origin
 
 Client mode options:
   --connect <url>       Remote WebSocket/HTTP URL (required)
@@ -49,7 +68,7 @@ Client mode options:
   --daemon              Run the client in the background
 
 Config File option:
-  --config <filepath>    Path to config file
+  --config <filepath>   Path to config file
 
 Examples:
   gossh server --port 7777 --ssh 22
@@ -58,6 +77,10 @@ Examples:
   gossh status
   gossh server -v --port 7777
   gossh client -vv --connect https://example.com --port 8888
+
+  # Connect via browser
+  gossh server --port 7777 --web https://example.com
+
 
 SSH connection:
   ssh user@localhost -p 8888`)
@@ -73,6 +96,8 @@ func main() {
 		fmt.Printf("%v\n", err)
 		os.Exit(1)
 	}
+
+	checkForUpdates()
 	homeDir, err := os.UserHomeDir()
 	if err == nil {
 		root := filepath.Join(homeDir, appDir)
@@ -88,6 +113,7 @@ func main() {
 
 	// Logger could be replaced OR a custom writer could be added to
 	logger := log.NewLogger(cfg.Verbosity, &log.LogWriter{File: logFile})
+	logger.Info("v%s", config.Version)
 	logger.Trace("Initialized logger")
 	if logFile != nil {
 		logger.Info("Log file: %s", logFile.Name())
@@ -105,6 +131,7 @@ func main() {
 						Timeout: time.Second * 3,
 
 						MaxConns: cfg.MaxConns,
+						Web:      cfg.Web,
 					},
 					logger,
 				).Run()
@@ -119,6 +146,7 @@ func main() {
 					Timeout: time.Second * 3,
 
 					MaxConns: cfg.MaxConns,
+					Web:      cfg.Web,
 				},
 				logger,
 			).Run()

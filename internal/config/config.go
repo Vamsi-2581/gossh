@@ -25,11 +25,12 @@ type Config struct {
 	Verbosity      log.LogLevel
 	Daemon         bool
 	MaxConns       int
+	Web            string
 }
 
 const (
 	// Version is the current gossh release version.
-	Version = "1.6.0"
+	Version = "1.7.0"
 
 	// DefaultSSHPort is the local SSH daemon port used by server mode.
 	DefaultSSHPort = 22
@@ -204,6 +205,7 @@ func ParseArgs(args []string) (Config, error) {
 		connect    string
 		target     string
 		daemon     bool
+		web        string
 		quiet      bool
 		v          bool
 		vv         bool
@@ -219,6 +221,7 @@ func ParseArgs(args []string) (Config, error) {
 	fs.StringVar(&connect, "connect", "", "remote URL")
 	fs.StringVar(&target, "target", "", "remote URL")
 	fs.BoolVar(&daemon, "daemon", false, "daemonize")
+	fs.StringVar(&web, "web", "", "remote URL")
 	fs.IntVar(&maxConns, "max-conns", math.MaxInt, "max-conns")
 	fs.BoolVar(&quiet, "quiet", false, "quiet")
 	fs.BoolVar(&v, "v", false, "info")
@@ -273,6 +276,10 @@ func ParseArgs(args []string) (Config, error) {
 
 	if daemon {
 		cfg.Daemon = true
+	}
+
+	if web != "" {
+		cfg.Web = strings.TrimRight(web, "/")
 	}
 
 	cfg.MaxConns = maxConns

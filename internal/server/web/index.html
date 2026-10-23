@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>show-term</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e5e7eb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #273047; }
+    h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+    #status { color: #9ca3af; font-size: 12px; }
+    main { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px; gap: 12px; }
+    #login { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 14px; background: #121a2d; border: 1px solid #273047; border-radius: 12px; }
+    label { display: flex; flex-direction: column; gap: 6px; color: #9ca3af; font-size: 12px; }
+    input { width: 220px; max-width: 100%; padding: 10px 12px; border: 1px solid #374151; border-radius: 8px; background: #0b1020; color: #f9fafb; font: inherit; }
+    button { padding: 10px 16px; border: 0; border-radius: 8px; color: white; background: #2563eb; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #terminal-wrap { flex: 1; min-height: 320px; padding: 10px; border: 1px solid #273047; border-radius: 12px; background: #050811; }
+    #terminal { width: 100%; height: 100%; min-height: 300px; }
+    .hint { margin: 0; color: #9ca3af; font-size: 12px; line-height: 1.5; }
+    @media (max-width: 600px) { input { width: 100%; } #login label { flex: 1 1 100%; } #terminal-wrap { min-height: 55vh; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>gossh<span style="color:#6b7280;font-weight:400">/ SSH</span></h1>
+    <div id="status" role="status">Not connected</div>
+  </header>
+  <main>
+    <form id="login">
+      <label>SSH username
+        <input id="username" name="username" autocomplete="username" required>
+      </label>
+      <label>SSH password
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button id="connect" type="submit">Connect</button>
+    </form>
+    <p class="hint">Credentials are sent only to this loopback app and are not stored. Verify your SSH host key before connecting.</p>
+    <div id="terminal-wrap"><div id="terminal"></div></div>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  <script>
+    (() => {
+      const status = document.getElementById('status');
+      const form = document.getElementById('login');
+      const button = document.getElementById('connect');
+      const term = new Terminal({
+        cursorBlink: true,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontSize: 14,
+        scrollback: 5000,
+        theme: { background: '#050811', foreground: '#e5e7eb', cursor: '#e5e7eb' }
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(document.getElementById('terminal'));
+      fit.fit();
+      let socket = null;
+
+      function setStatus(text) { status.textContent = text; }
+
+      function send(value) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify(value));
+        }
+      }
+
+      term.onData(data => send({type: 'input', data}));
+      term.onResize(size => send({type: 'resize', cols: size.cols, rows: size.rows}));
+
+      window.addEventListener('resize', () => {
+        fit.fit();
+        send({type: 'resize', cols: term.cols, rows: term.rows});
+      });
+
+      form.addEventListener('submit', event => {
+        event.preventDefault();
+        if (socket) socket.close();
+        term.clear();
+        button.disabled = true;
+        setStatus('Connecting…');
+        const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        socket = new WebSocket(`${scheme}//${location.host}/webterm-ws`);
+        socket.addEventListener('open', () => {
+          send({
+            type: 'auth',
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+            cols: term.cols,
+            rows: term.rows
+          });
+          // Remove password from the field after sending; it is not persisted.
+          document.getElementById('password').value = '';
+        });
+        socket.addEventListener('message', event => {
+          let msg;
+          try { msg = JSON.parse(event.data); } catch { return; }
+          if (msg.type === 'output') term.write(msg.data);
+          else if (msg.type === 'status') setStatus(msg.data);
+          else if (msg.type === 'error') {
+            setStatus('Connection failed');
+            term.writeln('\r\n\x1b[31m' + msg.data + '\x1b[0m');
+          }
+        });
+        socket.addEventListener('close', () => {
+          button.disabled = false;
+          if (!status.textContent.startsWith('Connection failed')) setStatus('Disconnected');
+        });
+        socket.addEventListener('error', () => {
+          setStatus('WebSocket error');
+          button.disabled = false;
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
