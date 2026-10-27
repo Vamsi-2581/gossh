@@ -3,52 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>show-term</title>
+  <title>gossh</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
   <style>
-    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e5e7eb; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #273047; }
-    h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
-    #status { color: #9ca3af; font-size: 12px; }
-    main { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px; gap: 12px; }
-    #login { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 14px; background: #121a2d; border: 1px solid #273047; border-radius: 12px; }
-    label { display: flex; flex-direction: column; gap: 6px; color: #9ca3af; font-size: 12px; }
-    input { width: 220px; max-width: 100%; padding: 10px 12px; border: 1px solid #374151; border-radius: 8px; background: #0b1020; color: #f9fafb; font: inherit; }
-    button { padding: 10px 16px; border: 0; border-radius: 8px; color: white; background: #2563eb; font-weight: 600; cursor: pointer; }
-    button:disabled { opacity: .55; cursor: wait; }
-    #terminal-wrap { flex: 1; min-height: 320px; padding: 10px; border: 1px solid #273047; border-radius: 12px; background: #050811; }
-    #terminal { width: 100%; height: 100%; min-height: 300px; }
-    .hint { margin: 0; color: #9ca3af; font-size: 12px; line-height: 1.5; }
-    @media (max-width: 600px) { input { width: 100%; } #login label { flex: 1 1 100%; } #terminal-wrap { min-height: 55vh; } }
+    html, body { margin: 0; height: 100%; background: #050811; }
+    #terminal { position: fixed; inset: 0; padding: 12px; }
+    .xterm-viewport { background-color: #050811 !important; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>gossh<span style="color:#6b7280;font-weight:400">/ SSH</span></h1>
-    <div id="status" role="status">Not connected</div>
-  </header>
-  <main>
-    <form id="login">
-      <label>SSH username
-        <input id="username" name="username" autocomplete="username" required>
-      </label>
-      <label>SSH password
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
-      </label>
-      <button id="connect" type="submit">Connect</button>
-    </form>
-    <p class="hint">Credentials are sent only to this loopback app and are not stored. Verify your SSH host key before connecting.</p>
-    <div id="terminal-wrap"><div id="terminal"></div></div>
-  </main>
+  <div id="terminal"></div>
+
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
   <script>
     (() => {
-      const status = document.getElementById('status');
-      const form = document.getElementById('login');
-      const button = document.getElementById('connect');
+      // ---------- Terminal setup ----------
       const term = new Terminal({
         cursorBlink: true,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
@@ -60,63 +30,283 @@
       term.loadAddon(fit);
       term.open(document.getElementById('terminal'));
       fit.fit();
+      term.focus();
+
+      // ---------- Colors for messages ----------
+      const DIM = '\x1b[90m', RED = '\x1b[31m', GREEN = '\x1b[32m',
+            CYAN = '\x1b[36m', BOLD = '\x1b[1m', RESET = '\x1b[0m';
+      const say = (text = '') => term.writeln(text);
+
+      // ---------- State ----------
+      // 'username' -> 'password' -> 'connecting' -> 'session'
+      let state = 'username';
+      let username = '';
+      let password = '';
       let socket = null;
+      let failed = false;
 
-      function setStatus(text) { status.textContent = text; }
+      function showInstructions() {
+        say(BOLD + CYAN + 'gossh' + RESET + DIM + '  web SSH terminal' + RESET);
+        say('');
+        say('How to log in:');
+        say('  1. Type your SSH username and press ' + BOLD + 'Enter' + RESET + '.');
+        say('  2. Type your SSH password and press ' + BOLD + 'Enter' + RESET + '.');
+        say('     ' + DIM + 'Nothing shows on screen while you type the password. That is normal.' + RESET);
+        say('  3. Wait a moment. Your SSH session starts in this same window.');
+        say('');
+        say('github: www.github.com/ankushT369/gossh');
+        say('');
+        say(DIM + 'Tips:' + RESET);
+        say(DIM + '  Backspace deletes a letter.' + RESET);
+        say(DIM + '  Ctrl+C cancels and goes back to the username step.' + RESET);
+        say(DIM + '  Your login is sent only to this app and is not saved.' + RESET);
+        say(DIM + '  Check your SSH host key before you trust the server.' + RESET);
+        say('');
+      }
 
+      function askUsername() {
+        state = 'username';
+        username = '';
+        password = '';
+        term.write(GREEN + 'username: ' + RESET);
+      }
+
+      function askPassword() {
+        state = 'password';
+        password = '';
+        term.write(GREEN + 'password: ' + RESET);
+      }
+
+      // ---------- Talking to the server ----------
       function send(value) {
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify(value));
         }
       }
 
-      term.onData(data => send({type: 'input', data}));
-      term.onResize(size => send({type: 'resize', cols: size.cols, rows: size.rows}));
+      function connect() {
+        state = 'connecting';
+        failed = false;
+        say(DIM + 'Connecting...' + RESET);
 
-      window.addEventListener('resize', () => {
-        fit.fit();
-        send({type: 'resize', cols: term.cols, rows: term.rows});
-      });
-
-      form.addEventListener('submit', event => {
-        event.preventDefault();
-        if (socket) socket.close();
-        term.clear();
-        button.disabled = true;
-        setStatus('Connecting…');
         const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
         socket = new WebSocket(`${scheme}//${location.host}/webterm-ws`);
+
         socket.addEventListener('open', () => {
-          send({
-            type: 'auth',
-            username: document.getElementById('username').value,
-            password: document.getElementById('password').value,
-            cols: term.cols,
-            rows: term.rows
-          });
-          // Remove password from the field after sending; it is not persisted.
-          document.getElementById('password').value = '';
+          send({ type: 'auth', username, password, cols: term.cols, rows: term.rows });
+          password = ''; // forget the password right after sending
         });
+
         socket.addEventListener('message', event => {
           let msg;
           try { msg = JSON.parse(event.data); } catch { return; }
-          if (msg.type === 'output') term.write(msg.data);
-          else if (msg.type === 'status') setStatus(msg.data);
-          else if (msg.type === 'error') {
-            setStatus('Connection failed');
-            term.writeln('\r\n\x1b[31m' + msg.data + '\x1b[0m');
+
+          if (msg.type === 'output') {
+            if (state === 'connecting') state = 'session';
+            term.write(msg.data);
+          } else if (msg.type === 'status') {
+            if (state !== 'session') say(DIM + msg.data + RESET);
+            if (/^connected/i.test(msg.data)) state = 'session';
+          } else if (msg.type === 'error') {
+            failed = true;
+            say('');
+            say(RED + msg.data + RESET);
           }
         });
+
         socket.addEventListener('close', () => {
-          button.disabled = false;
-          if (!status.textContent.startsWith('Connection failed')) setStatus('Disconnected');
+          const wasSession = state === 'session';
+          socket = null;
+          say('');
+          if (failed) {
+            say(RED + 'Login failed. Please try again.' + RESET);
+          } else if (wasSession) {
+            say(DIM + 'Connection closed.' + RESET);
+          } else {
+            say(RED + 'Could not connect to the server.' + RESET);
+          }
+          say('');
+          askUsername();
         });
-        socket.addEventListener('error', () => {
-          setStatus('WebSocket error');
-          button.disabled = false;
-        });
+
+        socket.addEventListener('error', () => { /* 'close' will follow and print the message */ });
+      }
+
+      // ---------- Keyboard handling ----------
+      term.onData(data => {
+        // Once the SSH session is running, pass every key straight through.
+        if (state === 'session') {
+          send({ type: 'input', data });
+          return;
+        }
+        if (state === 'connecting') return; // ignore keys while connecting
+
+        // Login steps: handle the keys ourselves.
+        for (const ch of data) {
+          if (ch === '\r') {                       // Enter
+            term.write('\r\n');
+            if (state === 'username') {
+              if (username.trim() === '') { askUsername(); return; }
+              askPassword();
+            } else if (state === 'password') {
+              connect();
+              return;
+            }
+          } else if (ch === '\x7f' || ch === '\b') { // Backspace
+            if (state === 'username' && username.length > 0) {
+              username = username.slice(0, -1);
+              term.write('\b \b');
+            } else if (state === 'password') {
+              password = password.slice(0, -1);
+            }
+          } else if (ch === '\x03') {              // Ctrl+C
+            say('^C');
+            askUsername();
+            return;
+          } else if (ch >= ' ' && ch !== '\x7f') { // normal typed or pasted letter
+            if (state === 'username') {
+              username += ch;
+              term.write(ch);                      // username is shown
+            } else if (state === 'password') {
+              password += ch;                      // password is NOT shown
+            }
+          }
+          // anything else (arrow keys, etc.) is ignored during login
+        }
       });
+
+      term.onResize(size => send({ type: 'resize', cols: size.cols, rows: size.rows }));
+
+      window.addEventListener('resize', () => fit.fit());
+      document.addEventListener('click', () => term.focus());
+
+      // ---------- Start ----------
+      showInstructions();
+      askUsername();
     })();
   </script>
 </body>
 </html>
+
+<!-- <!doctype html> -->
+<!-- <html lang="en"> -->
+<!-- <head> -->
+<!--   <meta charset="utf-8"> -->
+<!--   <meta name="viewport" content="width=device-width, initial-scale=1"> -->
+<!--   <title>gossshowh</title> -->
+<!--   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"> -->
+<!--   <style> -->
+<!--     :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1020; color: #e5e7eb; } -->
+<!--     * { box-sizing: border-box; } -->
+<!--     body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; } -->
+<!--     header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #273047; } -->
+<!--     h1 { font-size: 16px; margin: 0; letter-spacing: .2px; } -->
+<!--     #status { color: #9ca3af; font-size: 12px; } -->
+<!--     main { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 16px; gap: 12px; } -->
+<!--     #login { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; padding: 14px; background: #121a2d; border: 1px solid #273047; border-radius: 12px; } -->
+<!--     label { display: flex; flex-direction: column; gap: 6px; color: #9ca3af; font-size: 12px; } -->
+<!--     input { width: 220px; max-width: 100%; padding: 10px 12px; border: 1px solid #374151; border-radius: 8px; background: #0b1020; color: #f9fafb; font: inherit; } -->
+<!--     button { padding: 10px 16px; border: 0; border-radius: 8px; color: white; background: #2563eb; font-weight: 600; cursor: pointer; } -->
+<!--     button:disabled { opacity: .55; cursor: wait; } -->
+<!--     #terminal-wrap { flex: 1; min-height: 320px; padding: 10px; border: 1px solid #273047; border-radius: 12px; background: #050811; } -->
+<!--     #terminal { width: 100%; height: 100%; min-height: 300px; } -->
+<!--     .hint { margin: 0; color: #9ca3af; font-size: 12px; line-height: 1.5; } -->
+<!--     @media (max-width: 600px) { input { width: 100%; } #login label { flex: 1 1 100%; } #terminal-wrap { min-height: 55vh; } } -->
+<!--   </style> -->
+<!-- </head> -->
+<!-- <body> -->
+<!--   <header> -->
+<!--     <h1>gossh<span style="color:#6b7280;font-weight:400">/ SSH</span></h1> -->
+<!--     <div id="status" role="status">Not connected</div> -->
+<!--   </header> -->
+<!--   <main> -->
+<!--     <form id="login"> -->
+<!--       <label>SSH username -->
+<!--         <input id="username" name="username" autocomplete="username" required> -->
+<!--       </label> -->
+<!--       <label>SSH password -->
+<!--         <input id="password" name="password" type="password" autocomplete="current-password" required> -->
+<!--       </label> -->
+<!--       <button id="connect" type="submit">Connect</button> -->
+<!--     </form> -->
+<!--     <p class="hint">Credentials are sent only to this loopback app and are not stored. Verify your SSH host key before connecting.</p> -->
+<!--     <div id="terminal-wrap"><div id="terminal"></div></div> -->
+<!--   </main> -->
+<!--   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script> -->
+<!--   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script> -->
+<!--   <script> -->
+<!--     (() => { -->
+<!--       const status = document.getElementById('status'); -->
+<!--       const form = document.getElementById('login'); -->
+<!--       const button = document.getElementById('connect'); -->
+<!--       const term = new Terminal({ -->
+<!--         cursorBlink: true, -->
+<!--         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', -->
+<!--         fontSize: 14, -->
+<!--         scrollback: 5000, -->
+<!--         theme: { background: '#050811', foreground: '#e5e7eb', cursor: '#e5e7eb' } -->
+<!--       }); -->
+<!--       const fit = new FitAddon.FitAddon(); -->
+<!--       term.loadAddon(fit); -->
+<!--       term.open(document.getElementById('terminal')); -->
+<!--       fit.fit(); -->
+<!--       let socket = null; -->
+<!---->
+<!--       function setStatus(text) { status.textContent = text; } -->
+<!---->
+<!--       function send(value) { -->
+<!--         if (socket && socket.readyState === WebSocket.OPEN) { -->
+<!--           socket.send(JSON.stringify(value)); -->
+<!--         } -->
+<!--       } -->
+<!---->
+<!--       term.onData(data => send({type: 'input', data})); -->
+<!--       term.onResize(size => send({type: 'resize', cols: size.cols, rows: size.rows})); -->
+<!---->
+<!--       window.addEventListener('resize', () => { -->
+<!--         fit.fit(); -->
+<!--         send({type: 'resize', cols: term.cols, rows: term.rows}); -->
+<!--       }); -->
+<!---->
+<!--       form.addEventListener('submit', event => { -->
+<!--         event.preventDefault(); -->
+<!--         if (socket) socket.close(); -->
+<!--         term.clear(); -->
+<!--         button.disabled = true; -->
+<!--         setStatus('Connecting…'); -->
+<!--         const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:'; -->
+<!--         socket = new WebSocket(`${scheme}//${location.host}/webterm-ws`); -->
+<!--         socket.addEventListener('open', () => { -->
+<!--           send({ -->
+<!--             type: 'auth', -->
+<!--             username: document.getElementById('username').value, -->
+<!--             password: document.getElementById('password').value, -->
+<!--             cols: term.cols, -->
+<!--             rows: term.rows -->
+<!--           }); -->
+<!--           // Remove password from the field after sending; it is not persisted. -->
+<!--           document.getElementById('password').value = ''; -->
+<!--         }); -->
+<!--         socket.addEventListener('message', event => { -->
+<!--           let msg; -->
+<!--           try { msg = JSON.parse(event.data); } catch { return; } -->
+<!--           if (msg.type === 'output') term.write(msg.data); -->
+<!--           else if (msg.type === 'status') setStatus(msg.data); -->
+<!--           else if (msg.type === 'error') { -->
+<!--             setStatus('Connection failed'); -->
+<!--             term.writeln('\r\n\x1b[31m' + msg.data + '\x1b[0m'); -->
+<!--           } -->
+<!--         }); -->
+<!--         socket.addEventListener('close', () => { -->
+<!--           button.disabled = false; -->
+<!--           if (!status.textContent.startsWith('Connection failed')) setStatus('Disconnected'); -->
+<!--         }); -->
+<!--         socket.addEventListener('error', () => { -->
+<!--           setStatus('WebSocket error'); -->
+<!--           button.disabled = false; -->
+<!--         }); -->
+<!--       }); -->
+<!--     })(); -->
+<!--   </script> -->
+<!-- </body> -->
+<!-- </html> -->
