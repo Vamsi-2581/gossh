@@ -97,13 +97,40 @@ ssh ankush@localhost -p 8888
 **You are now connected to the remote machine through gossh!**
 
 
+###  5. Access via Browser (Alternative, Client Not Required)
+
+You can also access the terminal directly in your web browser without running `gossh client`:
+
+1. Start the gossh server with `--web` specifying your public HTTPS origin:
+
+```bash
+gossh server --port 8000 --web https://xyz.com
+```
+
+2. Open the terminal in your browser by navigating to:
+
+```text
+https://xyz.com/term
+```
+
+Enter your SSH credentials to establish an interactive terminal session directly in the browser.
+
+
 ### Flow Summary
 
 ```text
+Standard Client Mode:
 SSH Client (localhost:8888)
         ↓
 gossh Client
-        ↓ (WSS over HTTPS via ngrok)
+        ↓ (WSS over HTTPS via ngrok / cloudflare)
+gossh Server
+        ↓
+sshd (localhost:22)
+
+Browser Mode:
+Browser (https://xyz.com/term)
+        ↓ (WebSocket over HTTPS)
 gossh Server
         ↓
 sshd (localhost:22)
