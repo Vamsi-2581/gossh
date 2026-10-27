@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"gossh/internal/client"
 	"gossh/internal/config"
@@ -10,6 +11,7 @@ import (
 	"gossh/internal/server"
 	"gossh/internal/versioncheck"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -123,7 +125,7 @@ func main() {
 
 	// Logger could be replaced OR a custom writer could be added to
 	logger := log.NewLogger(cfg.Verbosity, &log.LogWriter{File: logFile})
-	if cfg.Mode != config.UpgradeMode {
+	if cfg.Mode != config.UpgradeMode && cfg.Mode != config.StatusMode {
 		logger.Info("v%s", config.Version)
 		logger.Trace("Initialized logger")
 		if logFile != nil {
@@ -188,6 +190,9 @@ func main() {
 	case config.StatusMode:
 		url := strings.TrimRight(cfg.WSURL, "/") + "/status"
 
+		// Get the time
+		start := time.Now()
+
 		resp, err := http.Get(url)
 		if err != nil {
 			runErr = fmt.Errorf("cannot reach %s: %w", url, err)
@@ -205,8 +210,27 @@ func main() {
 			runErr = fmt.Errorf("cannot read response: %w", err)
 			break
 		}
+		// measure the duration
+		duration := time.Since(start)
 
-		fmt.Println(string(body))
+		jsonBytes := []byte(body)
+
+		var data map[string]any
+		if err := json.Unmarshal(jsonBytes, &data); err != nil {
+			runErr = fmt.Errorf("cannot parse status JSON: %w", err)
+			break
+		}
+
+		// Add round-trip latency in milliseconds
+		data["rtt_ms"] = math.Round(float64(duration)/float64(time.Millisecond)*100) / 100
+
+		updatedBytes, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			runErr = fmt.Errorf("cannot encode status JSON: %w", err)
+			break
+		}
+
+		fmt.Println(string(updatedBytes))
 	case config.UpgradeMode:
 		client := &http.Client{Timeout: 30 * time.Second}
 		resp, err := client.Get(config.InstallerURL)
