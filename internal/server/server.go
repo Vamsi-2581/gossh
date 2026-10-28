@@ -97,17 +97,7 @@ func (gossh *GoSSHServer) Run() error {
 	})
 
 	// '/ws' is the general endpoint for ssh connections
-	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		newSessionCounter := atomic.AddInt32(&gossh.activeSessions, 1)
-
-		if int64(newSessionCounter) > int64(gossh.conf.MaxConns) {
-			atomic.AddInt32(&gossh.activeSessions, -1)
-
-			http.Error(w, "maximum connections reached", http.StatusServiceUnavailable)
-			return
-		}
-		gossh.handleServerWebSocket(w, r)
-	})
+	mux.HandleFunc("/ws", gossh.handleWSSession)
 
 	// '/status' endpoint is for server status
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
@@ -156,6 +146,24 @@ func (gossh *GoSSHServer) Run() error {
 		return nil
 	}
 	return err
+}
+
+// handleWSSession admits a /ws connection within the configured limit and
+// releases its slot when the request ends, including early failures such as a
+// refused upgrade or an unreachable sshd.
+func (gossh *GoSSHServer) handleWSSession(w http.ResponseWriter, r *http.Request) {
+	newSessionCounter := atomic.AddInt32(&gossh.activeSessions, 1)
+
+	if int64(newSessionCounter) > int64(gossh.conf.MaxConns) {
+		atomic.AddInt32(&gossh.activeSessions, -1)
+
+		http.Error(w, "maximum connections reached", http.StatusServiceUnavailable)
+		return
+	}
+
+	defer atomic.AddInt32(&gossh.activeSessions, -1)
+
+	gossh.handleServerWebSocket(w, r)
 }
 
 // handleServerWebSocket upgrades /ws requests and connects each WebSocket to the
@@ -460,8 +468,6 @@ func (gossh *GoSSHServer) handleServerStatus(w http.ResponseWriter, r *http.Requ
 // the session API from gossh/internal/tunnel, then updates session and byte counts.
 func (gossh *GoSSHServer) runServerSession(s *tunnel.Session) {
 	defer s.Close()
-
-	defer atomic.AddInt32(&gossh.activeSessions, -1)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
